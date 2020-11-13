@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2017 Manzil Zaheer All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "cover_tree.h"
+#include "sgtree.h"
 #include "utils.h"
 
 #include <numeric>

@@ -30,7 +30,7 @@ scalar* CoverTree::compute_pow_table()
 scalar* CoverTree::powdict = compute_pow_table();
 
 /******************************* Insert ***********************************************/
-bool CoverTree::insert(CoverTree::Node* current, const pointType& p)
+bool CoverTree::insert(CoverTree::Node* current, const pointType& p, int p_idx)
 {
     bool result = false;
 #ifdef DEBUG
@@ -43,6 +43,7 @@ bool CoverTree::insert(CoverTree::Node* current, const pointType& p)
         return false;
     }
 #endif
+    // default truncate_level=-1
     if (truncate_level > 0 && current->level < max_scale-truncate_level)
         return false;
 
@@ -53,16 +54,17 @@ bool CoverTree::insert(CoverTree::Node* current, const pointType& p)
     unsigned num_children = current->children.size();
     std::vector<int> idx(num_children);
     std::iota(std::begin(idx), std::end(idx), 0);
-    std::vector<scalar> dists(num_children);
+    std::vector<scalar> dists(num_children); // 计算current的每个child到p的距离
     for (unsigned i = 0; i < num_children; ++i)
         dists[i] = current->children[i]->dist(p);
+    // 按照距离升序排序
     auto comp_x = [&dists](int a, int b) { return dists[a] < dists[b]; };
     std::sort(std::begin(idx), std::end(idx), comp_x);
 
     bool flag = true;
     for (const auto& child_idx : idx)
     {
-        Node* child = current->children[child_idx];
+        Node* child = current->children[child_idx];  // current的子节点，与p距离从近到远
         scalar dist_child = dists[child_idx];
         if (dist_child <= 0.0)
         {
@@ -78,12 +80,13 @@ bool CoverTree::insert(CoverTree::Node* current, const pointType& p)
             if (child->maxdistUB < dist_child)
                 child->maxdistUB = dist_child;
             current->mut.unlock_shared();
-            result = insert(child, p);
+            result = insert(child, p, p_idx);
             flag = false;
             break;
         }
     }
-
+    // 如果p到current的距离小于base^(current->level), 但是p到所有current子节点的距离
+    // 大于base^(current->child->level), 那么p应该是current的子节点
     if (flag)
     {
         // release read lock then acquire write lock
@@ -93,7 +96,7 @@ bool CoverTree::insert(CoverTree::Node* current, const pointType& p)
         if (num_children==current->children.size())
         {
             int new_id = ++N;
-            current->setChild(p, new_id);
+            current->setChild(p, p_idx);
             result = true;
             current->mut.unlock();
 
@@ -106,7 +109,7 @@ bool CoverTree::insert(CoverTree::Node* current, const pointType& p)
         else
         {
             current->mut.unlock();
-            result = insert(current, p);
+            result = insert(current, p, p_idx);
         }
         //if (min_scale > current->level - 1)
         //{
@@ -202,21 +205,33 @@ bool CoverTree::insert(CoverTree::Node* current, CoverTree::Node* p)
     return result;
 }
 
-bool CoverTree::insert(const pointType& p)
+bool CoverTree::insert(const pointType& p, int p_idx)
 {
     bool result = false;
     id_valid = false;
     global_mut.lock_shared();
+    // 如果root到p的距离大于base^(root->level), 那么p就不可能是root的子节点
+    // 因为CoverTree必须满足父子节点之间的距离小于base^(father->level)
     if (root->dist(p) > root->covdist())
     {
         global_mut.unlock_shared();
         std::cout<<"Entered case 1: " << root->dist(p) << " " << root->covdist() << " " << root->level <<std::endl;
         std::cout<<"Requesting global lock!" <<std::endl;
         global_mut.lock();
+        /*
+            如果root到p的距离大于base^(root->level), 那么p就不能作为root的子节点
+            但是root作为根节点没有也不能有兄弟节点, 对于这样的情况, 应对策略是从root
+            开始向下搜寻找到一个叶子节点, 以这个叶子节点作为新根节点, 记为new_root, 
+            老根节点记为old_root, 令new_root->level=old_root->level+1, old_root为
+            new_root的子节点, 因为new_root->dist(old_root) < base^(new_root->level)
+            调整之后仍然满足CoverTree的条件
+            重复这样的操作直到new_root->dist(p) <= base^(root->level)
+        */
         while (root->dist(p) > base * root->covdist()/(base-1))
         {
             CoverTree::Node* current = root;
             CoverTree::Node* parent = NULL;
+            // 搜索叶子节点
             while (current->children.size()>0)
             {
                 parent = current;
@@ -237,10 +252,13 @@ bool CoverTree::insert(const pointType& p)
             }
         }
         ++N;
+        // 上面操作完之后, 以p为新的root, 而不是上面找到的那个叶子节点
+        // 这样做也没问题, 但是我也不知道为什么要这么做 
         CoverTree::Node* temp = new CoverTree::Node;
         temp->_p = p;
         temp->level = root->level + 1;
         temp->parent = NULL;
+        temp->ID = p_idx;
         //temp->maxdistUB = powdict[temp->level+1025];
         temp->children.push_back(root);
         root->parent = temp;
@@ -254,7 +272,7 @@ bool CoverTree::insert(const pointType& p)
     else
     {
         //root->tempDist = root->dist(p);
-        result = insert(root, p);
+        result = insert(root, p, p_idx);
     }
     global_mut.unlock_shared();
     return result;
@@ -707,7 +725,6 @@ CoverTree::CoverTree(std::vector<pointType>& pList, int begin, int end, int trun
 {
     //1. Compute the mean of entire data
     pointType mx = utils::ParallelAddList(pList).get_result()/pList.size();
-
     //2. Compute distance of every point from the mean || Variance
     pointType dists = utils::ParallelDistanceComputeList(pList, mx).get_result();
 
@@ -719,27 +736,30 @@ CoverTree::CoverTree(std::vector<pointType>& pList, int begin, int end, int trun
     std::cout<<"Max distance: " << dists[idx[0]] << std::endl;
 
     //4. Compute distance of every point from the mediod
-    mx = pList[idx[0]];
+    mx = pList[idx[0]]; // mx是离点云中心最远的点
+    // 计算点云中所有点与最远点的距离可以得到整个点云的最大空间跨度
     dists = utils::ParallelDistanceComputeList(pList, mx).get_result();
 
+    // dists.maxCoeff 返回矩阵中的最大值
     int scale_val = std::ceil(std::log(dists.maxCoeff())/std::log(base));
     std::cout<<"Scale chosen: " << scale_val << std::endl;
     pointType temp = pList[idx[0]];
-    min_scale = scale_val; //-1000;
-    max_scale = scale_val; //-1000;
+    min_scale = scale_val;
+    max_scale = scale_val;
     truncate_level = truncateArg;
     N = 1;
     D = temp.rows();
 
     root = new CoverTree::Node;
     root->_p = temp;
-    root->level = scale_val; //-1000;
-    root->maxdistUB = powdict[scale_val+1024];
+    root->ID = idx[0];
+    root->level = scale_val;
+    root->maxdistUB = powdict[scale_val+1024]; // base^scale_val
 
     int run_till = 50000 < end ? 50000 : end;
     for (int i = 1; i < run_till; ++i){
         utils::progressbar(i, run_till);
-        if(!insert(pList[idx[i]]))
+        if(!insert(pList[idx[i]], idx[i]))
             std::cout << "Insert failed!!!" << std::endl;
     }
     utils::progressbar(run_till, run_till);
@@ -750,7 +770,7 @@ CoverTree::CoverTree(std::vector<pointType>& pList, int begin, int end, int trun
     utils::parallel_for_progressbar(50000,end,[&](int i)->void{
     //for (int i = 50000; i < end; ++i){
         //utils::progressbar(i, end-50000);
-        if(!insert(pList[idx[i]]))
+        if(!insert(pList[idx[i]], idx[i]))
             std::cout << "Insert failed!!!" << std::endl;
     });
 }
@@ -766,8 +786,10 @@ CoverTree::CoverTree(matrixType& pMatrix, int begin, int end, int truncateArg /*
 
     //3. argort the distance to find approximate mediod
     std::vector<int> idx(end-begin);
+    // 从0开始, 给std::begin(idx)~std::end(idx)升序赋值
     std::iota(std::begin(idx), std::end(idx), 0);
     auto comp_x = [&dists](int a, int b) { return dists[a] > dists[b]; };
+    // 根据每个点到mx的距离降序排序
     std::sort(std::begin(idx), std::end(idx), comp_x);
     std::cout<<"Max distance: " << dists[idx[0]] << std::endl;
 
@@ -785,6 +807,7 @@ CoverTree::CoverTree(matrixType& pMatrix, int begin, int end, int truncateArg /*
     D = temp.rows();
 
     root = new CoverTree::Node;
+    root->ID = idx[0];
     root->_p = temp;
     root->level = scale_val; //-1000;
     root->maxdistUB = powdict[scale_val+1024];
@@ -792,7 +815,7 @@ CoverTree::CoverTree(matrixType& pMatrix, int begin, int end, int truncateArg /*
     int run_till = 50000<end ? 50000 : end;
     for (int i = 1; i < run_till; ++i){
         utils::progressbar(i, run_till);
-        if(!insert(pMatrix.col(idx[i])))
+        if(!insert(pMatrix.col(idx[i]), idx[i]))
             std::cout << "Insert failed!!!" << std::endl;
     }
     utils::progressbar(run_till, run_till);
@@ -803,7 +826,7 @@ CoverTree::CoverTree(matrixType& pMatrix, int begin, int end, int truncateArg /*
     utils::parallel_for_progressbar(50000,end,[&](int i)->void{
     //for (int i = 50000; i < end; ++i){
         //utils::progressbar(i, end-50000);
-        if(!insert(pMatrix.col(idx[i])))
+        if(!insert(pMatrix.col(idx[i]), idx[i]))
             std::cout << "Insert failed!!!" << std::endl;
     });
 }
@@ -838,6 +861,7 @@ CoverTree::CoverTree(Eigen::Map<matrixType>& pMatrix, int begin, int end, int tr
     D = temp.rows();
 
     root = new CoverTree::Node;
+    root->ID = idx[0];
     root->_p = temp;
     root->level = scale_val; //-1000;
     root->maxdistUB = powdict[scale_val+1024];
@@ -853,7 +877,7 @@ CoverTree::CoverTree(Eigen::Map<matrixType>& pMatrix, int begin, int end, int tr
     int run_till = 50000<end ? 50000 : end;
     for (int i = 1; i < run_till; ++i){
         utils::progressbar(i, run_till);
-        if(!insert(pMatrix.col(idx[i])))
+        if(!insert(pMatrix.col(idx[i]), idx[i]))
             std::cout << "Insert failed!!!" << std::endl;
     }
     utils::progressbar(run_till, run_till);
@@ -862,7 +886,7 @@ CoverTree::CoverTree(Eigen::Map<matrixType>& pMatrix, int begin, int end, int tr
     utils::parallel_for_progressbar(50000,end,[&](int i)->void{
     //for (int i = begin + 1; i < end; ++i){
         //utils::progressbar(i, end-50000);
-        if(!insert(pMatrix.col(idx[i])))
+        if(!insert(pMatrix.col(idx[i]), idx[i]))
             std::cout << "Insert failed!!!" << std::endl;
     });
 }
@@ -1080,6 +1104,74 @@ std::vector<pointType> CoverTree::get_points()
 
     return points;
 }
+
+std::map<int, std::vector<pointType>> CoverTree::get_level_points(){
+    std::map<int,std::vector<pointType>> level_points;
+
+    std::stack<CoverTree::Node*> travel;
+    CoverTree::Node* current;
+
+    // Initialize with root
+    travel.push(root);
+
+    // N = 0;
+    // Pop, print and then push the children
+    while (!travel.empty())
+    {
+        // Pop
+        current = travel.top();
+        travel.pop();
+
+        // Add to dataset
+        level_points[current->level].push_back(current->_p);
+        // current->ID = N++;
+
+        // Now push the children
+        for (const auto& child : *current)
+            travel.push(child);
+    }
+
+    return level_points;
+}
+
+void CoverTree::cal_level2ptsidx_pts2child(){
+    
+    std::stack<CoverTree::Node*> travel;
+    CoverTree::Node* current;
+
+    // Initialize with root
+    travel.push(root);
+
+    // N = 0;
+    // Pop, print and then push the children
+    while (!travel.empty())
+    {
+        // Pop
+        current = travel.top();
+        travel.pop();
+
+        // Add to dataset
+        level2ptsidx[current->level].push_back(current->ID);
+        // current->ID = N++;
+
+        // Now push the children
+        for (const auto& child : *current){
+            travel.push(child);
+            pts2child[current->ID].push_back(child->ID);
+        }
+
+    }
+}
+
+std::map<int, std::vector<int>> CoverTree::ret_level2ptsidx(){
+    return level2ptsidx;
+}
+std::map<int, std::vector<int>> CoverTree::ret_pts2child(){
+    return pts2child;
+}
+
+
+
 
 
 /******************************************* Functions to remove ***************************************************/

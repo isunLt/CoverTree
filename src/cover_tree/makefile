@@ -43,7 +43,8 @@ SOURCEDIR = .
 BUILDDIR = ../build
 EXECUTABLE = cover_tree
 
-SOURCES = $(wildcard $(SOURCEDIR)/*.cpp)
+ALL_FILES = $(wildcard $(SOURCEDIR)/*.cpp)
+SOURCES += $(filter-out $(SOURCEDIR)/covertreec_pybind.cpp, $(ALL_FILES))
 OBJECTS = $(patsubst $(SOURCEDIR)/%.cpp,$(BUILDDIR)/%.o,$(SOURCES))
 
 COMMONS = $(wildcard $(SOURCEDIR)/../commons/*.cpp)

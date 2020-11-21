@@ -52,7 +52,7 @@ class CoverTree
 /************************* Internal Functions ***********************************************/
 protected:
     /*** Base to use for the calculations ***/
-    static constexpr scalar base = 1.3;
+    static constexpr scalar base = 5.0;
     static scalar* compute_pow_table();
     static scalar* powdict;
 
@@ -92,7 +92,7 @@ public:
             temp->_p = pIns;
             temp->level = level - 1;
             temp->maxdistUB = 0; // powdict[level + 1024];
-            temp->ID = new_id;
+            temp->ID = new_id;  // change new_id to idx[i]
             temp->parent = this;
             children.push_back(temp);
             return temp;
@@ -166,6 +166,8 @@ public:
     };
     // mutable std::map<int,std::atomic<unsigned>> dist_count;
     std::map<int,unsigned> level_count;
+    std::map<int,std::vector<int>> level2ptsidx;
+    std::map<int,std::vector<int>> pts2child;
 
 protected:
     Node* root;                         // Root of the tree
@@ -183,7 +185,7 @@ protected:
     std::SHARED_MUTEX_TYPE global_mut;  // lock for changing the root
 
     /*** Insert point or node at current node ***/
-    bool insert(Node* current, const pointType& p);
+    bool insert(Node* current, const pointType& p, int p_idx);
     bool insert(Node* current, Node* p);
 
     /*** Nearest Neighbour search ***/
@@ -236,7 +238,7 @@ public:
 
 
     /*** Insert point p into the cover tree ***/
-    bool insert(const pointType& p);
+    bool insert(const pointType& p, int p_idx);
 
     /*** Remove point p into the cover tree ***/
     bool remove(const pointType& p);
@@ -263,12 +265,18 @@ public:
 
     /*** Return all points in the tree ***/
     std::vector<pointType> get_points();
+    std::map<int, std::vector<pointType>> get_level_points();
+    // std::map<int, std::vector<int>> get_level_points_idx();
+    void cal_level2ptsidx_pts2child();
+    std::map<int, std::vector<int>> ret_level2ptsidx();
+    std::map<int, std::vector<int>> ret_pts2child();
 
     /*** Count the points in the tree ***/
     unsigned count_points();
 
     /*** Pretty print ***/
     friend std::ostream& operator<<(std::ostream& os, const CoverTree& ct);
+
 };
 
 #endif //_COVER_TREE_H

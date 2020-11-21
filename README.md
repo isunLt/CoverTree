@@ -1,3 +1,5 @@
+**this Repository is forked from https://github.com/manzilzaheer/CoverTree**
+
 # Tree Based Nearest Neighbor Search with Guarantees
 
 We present parallel implementations of two tree based nearest neighbor search data structures: SG-Tree and Cover Tree.
